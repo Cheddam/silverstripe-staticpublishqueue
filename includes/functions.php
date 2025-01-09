@@ -2,6 +2,8 @@
 
 namespace SilverStripe\StaticPublishQueue;
 
+use SilverStripe\Core\Environment;
+
 if (!function_exists('SilverStripe\\StaticPublishQueue\\URLtoPath')) {
     function URLtoPath($url, $baseURL = '', $domainBasedCaching = false)
     {
@@ -10,15 +12,28 @@ if (!function_exists('SilverStripe\\StaticPublishQueue\\URLtoPath')) {
         // or through URL collection (for controller method names etc.).
         $urlParts = @parse_url($url);
 
-        // query strings are not yet supported so we need to bail is there is one present
-        // except for some params, which we ignore
+        // Handle query parameters
+        $queryPath = '';
         if (!empty($urlParts['query'])) {
             parse_str($urlParts['query'], $queryParts);
+            ksort($queryParts);
+
+            // Drop the stage parameter if we're in Live mode
             if (!empty($queryParts['stage']) && $queryParts['stage'] === 'Live') {
                 unset($queryParts['stage']);
             }
-            if (!empty($queryParts)) {
-                return;
+
+            // Query parameters can form part of the path, but only if they are explicitly configured
+            if ($cacheableParameters = Environment::getEnv('CACHEABLE_QUERY_PARAMETERS')) {
+                $cacheableParameters = explode(',', $cacheableParameters);
+                foreach ($queryParts as $key => $value) {
+                    // Any query parameter that isn't cacheable prevents generation of a valid path
+                    if (!in_array($key, $cacheableParameters)) {
+                        return;
+                    }
+
+                    $queryPath .= "--$key-$value";
+                }
             }
         }
 
@@ -48,7 +63,7 @@ if (!function_exists('SilverStripe\\StaticPublishQueue\\URLtoPath')) {
         if ($dirName !== '/' && $dirName !== '.') {
             $prefix = $dirName . '/';
         }
-        return $prefix . basename($filename);
+        return $prefix . basename($filename) . $queryPath;
     }
 }
 
@@ -63,6 +78,17 @@ if (!function_exists('SilverStripe\\StaticPublishQueue\\PathToURL')) {
         // Strip off the file extension and leading /
         $relativeURL = substr($path, 0, strrpos($path, '.'));
         $relativeURL = ltrim($relativeURL, '/');
+
+        // Parse out and append query parameters
+        $splitQueryParameters = explode('--', $relativeURL);
+        $relativeURL = array_shift($splitQueryParameters);
+        if (!empty($splitQueryParameters)) {
+            $formattedQueryParameters = array_map(
+                fn ($param) => str_replace('-', '=', $param),
+                $splitQueryParameters
+            );
+            $relativeURL .= '?' . implode('&', $formattedQueryParameters);
+        }
 
         if ($domainBasedCaching) {
             // factor in the domain as the top dir
